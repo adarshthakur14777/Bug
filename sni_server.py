@@ -1,54 +1,62 @@
 import socket
 import threading
-import sys
+import datetime
 
-def handle_client(client_socket, target_host, target_port):
+LISTEN_PORT = 80  # You can change this to 8080 or anything open
+FORWARD_TO = ("127.0.0.1", 22)  # Forward to local SSH server
+
+def handle_client(client_socket):
     try:
-        # Connect to the target service (e.g., SSH on localhost)
-        remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        remote_socket.connect((target_host, target_port))
+        request = client_socket.recv(1024)
+        if b"Host:" in request:
+            # Send welcome HTTP response similar to FN Network
+            response = (
+                "HTTP/1.1 101 <b><i><font color=\"green\">WELCOME TO FN NETWORK</font></i></b>\r\n"
+                f"Date: {datetime.datetime.utcnow():%a, %d %b %Y %H:%M:%S GMT}\r\n"
+                "Connection: upgrade\r\n"
+                "Upgrade: websocket\r\n"
+                "Server: cloudflare\r\n"
+                "CF-RAY: 1234567890abcdef-BOM\r\n"
+                "\r\n"
+            )
+            client_socket.sendall(response.encode())
 
-        # Start forwarding traffic in both directions
-        threading.Thread(target=forward, args=(client_socket, remote_socket)).start()
-        threading.Thread(target=forward, args=(remote_socket, client_socket)).start()
+            # Forward the connection to local SSH
+            remote_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            remote_socket.connect(FORWARD_TO)
 
+            # Start bi-directional forwarding
+            threading.Thread(target=pipe, args=(client_socket, remote_socket)).start()
+            threading.Thread(target=pipe, args=(remote_socket, client_socket)).start()
+        else:
+            client_socket.close()
     except Exception as e:
-        print(f"[!] Error handling client: {e}")
         client_socket.close()
 
-def forward(source, destination):
+def pipe(src, dst):
     try:
         while True:
-            data = source.recv(4096)
+            data = src.recv(4096)
             if not data:
                 break
-            destination.sendall(data)
+            dst.sendall(data)
     except:
         pass
     finally:
-        source.close()
-        destination.close()
+        src.close()
+        dst.close()
 
-def start_sni_proxy(listen_port, forward_host, forward_port):
+def start_server():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind(('0.0.0.0', listen_port))
+    server.bind(('0.0.0.0', LISTEN_PORT))
     server.listen(100)
-
-    print(f"[+] SNI Proxy running on 0.0.0.0:{listen_port} -> {forward_host}:{forward_port}")
+    print(f"[+] SNI Proxy Listening on Port {LISTEN_PORT}")
 
     while True:
-        client_socket, addr = server.accept()
-        print(f"[+] New connection from {addr[0]}:{addr[1]}")
-        threading.Thread(target=handle_client, args=(client_socket, forward_host, forward_port)).start()
+        client, addr = server.accept()
+        print(f"[+] Connection from {addr[0]}")
+        threading.Thread(target=handle_client, args=(client,)).start()
 
 if __name__ == "__main__":
-    if len(sys.argv) != 4:
-        print(f"Usage: python {sys.argv[0]} <listen_port> <forward_host> <forward_port>")
-        sys.exit(1)
-
-    listen_port = int(sys.argv[1])
-    forward_host = sys.argv[2]
-    forward_port = int(sys.argv[3])
-
-    start_sni_proxy(listen_port, forward_host, forward_port)
-
+    start_server()
+    
